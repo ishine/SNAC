@@ -464,6 +464,7 @@ class SynthesizerTrn(nn.Module):
 
         if n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
+            assert False
 
     def forward(self, x, x_lengths, lang, y, y_lengths, sid=None):
 

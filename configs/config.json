@@ -112,6 +112,5 @@
     "gin_channels": 512,
     "token_num": 50,
     "gst_n_heads": 1
-  },
-  "model_dir": "./logdir/cjke"
+  }
 }
