@@ -456,7 +456,7 @@ class SynthesizerTrn(nn.Module):
         self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16,
                                       gin_channels=gin_channels)
         self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=128)
-        self.spk_enc = ReferenceEncoder()
+        self.spk_enc = ReferenceEncoder(spec_channels)
         if use_sdp:
             self.dp = StochasticDurationPredictor(hidden_channels, 192, 3, 0.5, 4, gin_channels=128)
         else:
@@ -465,6 +465,7 @@ class SynthesizerTrn(nn.Module):
         if n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
             assert False
+
 
     def forward(self, x, x_lengths, lang, y, y_lengths, sid=None):
 
@@ -564,9 +565,10 @@ class ReferenceEncoder(nn.Module):
     outputs --- [N, ref_enc_gru_size]
     '''
 
-    def __init__(self):
+    def __init__(self, spec_channels):
 
         super().__init__()
+        self.spec_channels= spec_channels
         ref_enc_filters = [32, 32, 64, 64, 128, 128]
         K = len(ref_enc_filters)
         filters = [1] + ref_enc_filters
@@ -578,14 +580,14 @@ class ReferenceEncoder(nn.Module):
         self.convs = nn.ModuleList(convs)
         # self.wns = nn.ModuleList([weight_norm(num_features=ref_enc_filters[i]) for i in range(K)])
 
-        out_channels = self.calculate_channels(513, 3, 2, 1, K)
+        out_channels = self.calculate_channels(spec_channels, 3, 2, 1, K)
         self.gru = nn.GRU(input_size=ref_enc_filters[-1] * out_channels,
                           hidden_size=256 // 2,
                           batch_first=True)
 
     def forward(self, inputs, mask=None):
         N = inputs.size(0)
-        out = inputs.view(N, 1, -1, 513)  # [N, 1, Ty, n_freqs]
+        out = inputs.view(N, 1, -1, self.spec_channels)  # [N, 1, Ty, n_freqs]
         for conv in self.convs:
             out = conv(out)
             # out = wn(out)

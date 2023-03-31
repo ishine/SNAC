@@ -83,6 +83,7 @@ def run(rank, n_gpus, hps):
         len(symbols),
         hps.data.filter_length // 2 + 1,
         hps.train.segment_size // hps.data.hop_length,
+        n_speakers=hps.data.n_speakers,
         **hps.model).cuda(rank)
 
     g_param = sum(param.numel() for name, param in net_g.named_parameters() if 'enc_q' not in name)
