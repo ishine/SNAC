@@ -425,7 +425,7 @@ class CVAEPredictor(torch.nn.Module):
         self.decoder_fc1 = LinearSequential(latent_size, hidden_c, hidden_c)
         self.decoder_fc2 = LinearSequential(hidden_c, hidden_c, style_c)
 
-    def forward(self, sid_emb, style_emb=None, forward=False):
+    def forward(self, sid_emb, style_emb=None, forward=False, noise_scale=1):
         x = F.leaky_relu(self.prior_cond(sid_emb.unsqueeze(-1))).transpose(1, 2)
         mu_p = self.prior_fc1(x)
         logvar_p = self.prior_fc2(x)
@@ -448,7 +448,7 @@ class CVAEPredictor(torch.nn.Module):
             return loss_rec, loss_kl
         else:
             prior_norm = D.Normal(mu_p, torch.exp(logvar_p))
-            z = prior_norm.rsample()
+            z = mu_p + torch.randn_like(mu_p) * torch.exp(logvar_p) * noise_scale
             h = self.decoder_fc1(z)
             pred_style_emb = self.decoder_fc2(F.leaky_relu(h))
             return pred_style_emb.transpose(1, 2) / 10
@@ -574,13 +574,13 @@ class SynthesizerTrn(nn.Module):
         z, z_p, m_p, logs_p, m_q, logs_q), style_loss_kl, style_loss_rec
 
     def infer(self, x, x_lengths, lang, y, sid=None, noise_scale=0.6, length_scale=1.1,
-              noise_scale_w=0.7, max_len=None, predict_style=True):
+              noise_scale_w=0.7, max_len=None, predict_style=True, style_noise_scale=1):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, lang)
 
         sid_emb = self.sid_emb(sid)
 
         if predict_style:
-            s = self.style_predictor(sid_emb)
+            s = self.style_predictor(sid_emb, noise_scale=style_noise_scale)
         else:
             # s: (B, D)
             s = self.spk_enc(y.transpose(1, 2), None)
