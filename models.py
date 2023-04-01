@@ -395,84 +395,43 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
+class LinearSequential(torch.nn.Module):
+    def __init__(self, input_channel, hidden_channel, output_channel):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_channel, hidden_channel),
+            nn.ReLU(),
+            nn.Linear(hidden_channel, hidden_channel),
+            nn.ReLU(),
+            nn.Linear(hidden_channel, hidden_channel),
+            nn.ReLU(),
+            nn.Linear(hidden_channel, output_channel)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
 class CVAEPredictor(torch.nn.Module):
-    def __init__(self, hidden_c, gst_c, spk_emb_channels, latent_size):
+    def __init__(self, hidden_c, style_c, spk_emb_channels, latent_size):
         super(CVAEPredictor, self).__init__()
-        # self.prior_lstm = nn.LSTM(input_size=hidden_c, hidden_size=hidden_c, batch_first=True)
-        # self.prior_cond = nn.Conv1d(spk_emb_channels, hidden_c, 1)
-        self.prior_cond = nn.Embedding(300, hidden_c)
-        self.prior_fc1 = nn.Sequential(
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, latent_size)
-        )
-        self.prior_fc2 = nn.Sequential(
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, latent_size)
-        )
+        self.prior_cond = nn.Conv1d(spk_emb_channels, hidden_c, 1)
+        self.prior_fc1 = LinearSequential(hidden_c, hidden_c, latent_size)
+        self.prior_fc2 = LinearSequential(hidden_c, hidden_c, latent_size)
 
+        self.posterior_fc1 = LinearSequential(style_c, hidden_c, latent_size)
+        self.posterior_fc2 = LinearSequential(style_c, hidden_c, latent_size)
 
-        self.posterior_fc1 = nn.Sequential(
-            nn.Linear(gst_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, latent_size)
-        )
+        self.decoder_fc1 = LinearSequential(latent_size, hidden_c, hidden_c)
+        self.decoder_fc2 = LinearSequential(hidden_c, hidden_c, style_c)
 
-        self.posterior_fc2 =nn.Sequential(
-            nn.Linear(gst_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, latent_size)
-        )
-
-        self.decoder_fc1 = nn.Sequential(
-            nn.Linear(latent_size, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c)
-        )
-
-        self.decoder_fc2 = nn.Sequential(
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, hidden_c),
-            nn.ReLU(),
-            nn.Linear(hidden_c, gst_c)
-        )
-
-
-    def forward(self, x, sid, style_emb=None, forward=False):
-        # x = x.detach()
-        # x = x + self.prior_cond(sid).unsqueeze(-1)
-        # _, (x, _) = self.prior_lstm(x.transpose(1,2))
-        x = F.leaky_relu(self.prior_cond(sid).unsqueeze(1))
-        print(x.shape)
+    def forward(self, sid_emb, style_emb=None, forward=False):
+        x = F.leaky_relu(self.prior_cond(sid_emb.unsqueeze(-1))).transpose(1, 2)
         mu_p = self.prior_fc1(x)
         logvar_p = self.prior_fc2(x)
         if forward:
 
-            style_emb = style_emb.detach().transpose(1,2)*10
+            style_emb = style_emb.detach().transpose(1, 2) * 10
             mu_q = self.posterior_fc1(style_emb)
             logvar_q = self.posterior_fc2(style_emb)
 
@@ -492,7 +451,7 @@ class CVAEPredictor(torch.nn.Module):
             z = prior_norm.rsample()
             h = self.decoder_fc1(z)
             pred_style_emb = self.decoder_fc2(F.leaky_relu(h))
-            return pred_style_emb.transpose(1,2)/10
+            return pred_style_emb.transpose(1, 2) / 10
 
 
 class SynthesizerTrn(nn.Module):
@@ -563,27 +522,22 @@ class SynthesizerTrn(nn.Module):
         else:
             self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=128)
 
-        if n_speakers > 1:
-            self.emb_g = nn.Embedding(n_speakers, gin_channels)
-            assert False
-        self.style_predictor = CVAEPredictor(hidden_channels, 128, None, 32)
+        self.style_predictor = CVAEPredictor(hidden_channels, 128, 128, 32)
+        self.sid_emb = nn.Embedding(300, 128)
 
     def forward(self, x, x_lengths, lang, y, y_lengths, sid=None):
 
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, lang)
-        if self.n_speakers > 0:
-            g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
-        else:
-            g = None
 
-        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
+        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=None)
 
         # s: (B, D)
         s = self.spk_enc(y.transpose(1, 2))
         # (B, D, 1) like VITS
         s = s.unsqueeze(-1)
 
-        style_loss_kl, style_loss_rec = self.style_predictor(x.detach(), sid.detach(), s.detach(), forward=True)
+        sid_emb = self.sid_emb(sid)
+        style_loss_kl, style_loss_rec = self.style_predictor(sid_emb, s.detach(), forward=True)
 
         # SNAC to flow
         z_p, tot_log_det = self.flow(z, y_mask, g=s)
@@ -615,20 +569,18 @@ class SynthesizerTrn(nn.Module):
         logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
 
         z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
-        o = self.dec(z_slice, g=g)
-        return o, l_length, tot_log_det, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), style_loss_kl, style_loss_rec
+        o = self.dec(z_slice, g=None)
+        return o, l_length, tot_log_det, attn, ids_slice, x_mask, y_mask, (
+        z, z_p, m_p, logs_p, m_q, logs_q), style_loss_kl, style_loss_rec
 
     def infer(self, x, x_lengths, lang, y, sid=None, noise_scale=0.6, length_scale=1.1,
               noise_scale_w=0.7, max_len=None, predict_style=True):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, lang)
 
-        if self.n_speakers > 0:
-            g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
-        else:
-            g = None
+        sid_emb = self.sid_emb(sid)
 
         if predict_style:
-            s = self.style_predictor(x.detach(), sid)
+            s = self.style_predictor(sid_emb)
         else:
             # s: (B, D)
             s = self.spk_enc(y.transpose(1, 2), None)
@@ -653,7 +605,7 @@ class SynthesizerTrn(nn.Module):
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
 
         z = self.flow(z_p, y_mask, g=s, reverse=True)
-        o = self.dec((z * y_mask)[:, :, :max_len], g=g)
+        o = self.dec((z * y_mask)[:, :, :max_len], g=None)
         return o, attn, y_mask, (z, z_p, m_p, logs_p)
 
     def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
@@ -676,7 +628,7 @@ class ReferenceEncoder(nn.Module):
     def __init__(self, spec_channels):
 
         super().__init__()
-        self.spec_channels= spec_channels
+        self.spec_channels = spec_channels
         ref_enc_filters = [32, 32, 64, 64, 128, 128]
         K = len(ref_enc_filters)
         filters = [1] + ref_enc_filters
