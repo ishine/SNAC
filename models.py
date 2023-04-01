@@ -8,6 +8,7 @@ import commons
 import modules
 import attentions
 import monotonic_align
+import torch.distributions as D
 
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
@@ -394,6 +395,106 @@ class MultiPeriodDiscriminator(torch.nn.Module):
         return y_d_rs, y_d_gs, fmap_rs, fmap_gs
 
 
+class CVAEPredictor(torch.nn.Module):
+    def __init__(self, hidden_c, gst_c, spk_emb_channels, latent_size):
+        super(CVAEPredictor, self).__init__()
+        # self.prior_lstm = nn.LSTM(input_size=hidden_c, hidden_size=hidden_c, batch_first=True)
+        # self.prior_cond = nn.Conv1d(spk_emb_channels, hidden_c, 1)
+        self.prior_cond = nn.Embedding(300, hidden_c)
+        self.prior_fc1 = nn.Sequential(
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, latent_size)
+        )
+        self.prior_fc2 = nn.Sequential(
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, latent_size)
+        )
+
+
+        self.posterior_fc1 = nn.Sequential(
+            nn.Linear(gst_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, latent_size)
+        )
+
+        self.posterior_fc2 =nn.Sequential(
+            nn.Linear(gst_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, latent_size)
+        )
+
+        self.decoder_fc1 = nn.Sequential(
+            nn.Linear(latent_size, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c)
+        )
+
+        self.decoder_fc2 = nn.Sequential(
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, hidden_c),
+            nn.ReLU(),
+            nn.Linear(hidden_c, gst_c)
+        )
+
+
+    def forward(self, x, sid, style_emb=None, forward=False):
+        # x = x.detach()
+        # x = x + self.prior_cond(sid).unsqueeze(-1)
+        # _, (x, _) = self.prior_lstm(x.transpose(1,2))
+        x = F.leaky_relu(self.prior_cond(sid).unsqueeze(1))
+        print(x.shape)
+        mu_p = self.prior_fc1(x)
+        logvar_p = self.prior_fc2(x)
+        if forward:
+
+            style_emb = style_emb.detach().transpose(1,2)*10
+            mu_q = self.posterior_fc1(style_emb)
+            logvar_q = self.posterior_fc2(style_emb)
+
+            prior_norm = D.Normal(mu_p, torch.exp(logvar_p))
+            posterior_norm = D.Normal(mu_q, torch.exp(logvar_q))
+
+            loss_kl = D.kl_divergence(posterior_norm, prior_norm).mean()
+            posterior_z = posterior_norm.rsample()
+
+            h = self.decoder_fc1(posterior_z)
+            pred_style_emb = self.decoder_fc2(F.leaky_relu(h))
+            # print(pred_style_emb.shape, style_emb.shape)
+            loss_rec = F.mse_loss(pred_style_emb, style_emb)
+            return loss_rec, loss_kl
+        else:
+            prior_norm = D.Normal(mu_p, torch.exp(logvar_p))
+            z = prior_norm.rsample()
+            h = self.decoder_fc1(z)
+            pred_style_emb = self.decoder_fc2(F.leaky_relu(h))
+            return pred_style_emb.transpose(1,2)/10
+
+
 class SynthesizerTrn(nn.Module):
     """
   Synthesizer for Training
@@ -465,7 +566,7 @@ class SynthesizerTrn(nn.Module):
         if n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
             assert False
-
+        self.style_predictor = CVAEPredictor(hidden_channels, 128, None, 32)
 
     def forward(self, x, x_lengths, lang, y, y_lengths, sid=None):
 
@@ -481,6 +582,9 @@ class SynthesizerTrn(nn.Module):
         s = self.spk_enc(y.transpose(1, 2))
         # (B, D, 1) like VITS
         s = s.unsqueeze(-1)
+
+        style_loss_kl, style_loss_rec = self.style_predictor(x.detach(), sid.detach(), s.detach(), forward=True)
+
         # SNAC to flow
         z_p, tot_log_det = self.flow(z, y_mask, g=s)
 
@@ -512,9 +616,10 @@ class SynthesizerTrn(nn.Module):
 
         z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
         o = self.dec(z_slice, g=g)
-        return o, l_length, tot_log_det, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
+        return o, l_length, tot_log_det, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q), style_loss_kl, style_loss_rec
 
-    def infer(self, x, x_lengths, lang, y, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None):
+    def infer(self, x, x_lengths, lang, y, sid=None, noise_scale=0.6, length_scale=1.1,
+              noise_scale_w=0.7, max_len=None, predict_style=True):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, lang)
 
         if self.n_speakers > 0:
@@ -522,10 +627,13 @@ class SynthesizerTrn(nn.Module):
         else:
             g = None
 
-        # s: (B, D)
-        s = self.spk_enc(y.transpose(1, 2), None)
-        # (B, D, 1) like VITS
-        s = s.unsqueeze(-1)
+        if predict_style:
+            s = self.style_predictor(x.detach(), sid)
+        else:
+            # s: (B, D)
+            s = self.spk_enc(y.transpose(1, 2), None)
+            # (B, D, 1) like VITS
+            s = s.unsqueeze(-1)
 
         if self.use_sdp:
             logw = self.dp(x, x_mask, g=s, reverse=True, noise_scale=noise_scale_w)
