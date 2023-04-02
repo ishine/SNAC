@@ -426,7 +426,7 @@ class CVAEPredictor(torch.nn.Module):
         self.decoder_fc2 = LinearSequential(hidden_c, hidden_c, style_c)
 
     def forward(self, sid_emb, style_emb=None, forward=False, noise_scale=1):
-        x = F.leaky_relu(self.prior_cond(sid_emb.unsqueeze(-1))).transpose(1, 2)
+        x = F.leaky_relu(self.prior_cond(sid_emb)).transpose(1, 2)
         mu_p = self.prior_fc1(x)
         logvar_p = self.prior_fc2(x)
         if forward:
@@ -536,9 +536,10 @@ class SynthesizerTrn(nn.Module):
         # (B, D, 1) like VITS
         s = s.unsqueeze(-1)
 
-        sid_emb = self.sid_emb(sid)
-        style_loss_kl, style_loss_rec = self.style_predictor(sid_emb, s.detach(), forward=True)
+        sid_emb = self.sid_emb(sid).unsqueeze(-1)
+        style_loss_kl, style_loss_rec = self.style_predictor(sid_emb.detach(), s.detach(), forward=True)
 
+        s = s + sid_emb
         # SNAC to flow
         z_p, tot_log_det = self.flow(z, y_mask, g=s)
 
@@ -577,7 +578,7 @@ class SynthesizerTrn(nn.Module):
               noise_scale_w=0.7, max_len=None, predict_style=True, style_noise_scale=1):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, lang)
 
-        sid_emb = self.sid_emb(sid)
+        sid_emb = self.sid_emb(sid).unsqueeze(-1)
 
         if predict_style:
             s = self.style_predictor(sid_emb, noise_scale=style_noise_scale)
@@ -586,7 +587,7 @@ class SynthesizerTrn(nn.Module):
             s = self.spk_enc(y.transpose(1, 2), None)
             # (B, D, 1) like VITS
             s = s.unsqueeze(-1)
-
+        s = s + sid_emb
         if self.use_sdp:
             logw = self.dp(x, x_mask, g=s, reverse=True, noise_scale=noise_scale_w)
         else:
