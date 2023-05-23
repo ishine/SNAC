@@ -458,9 +458,9 @@ class VAE_GST(nn.Module):
     def __init__(self, spec_channels, z_latent_dim, emb_dim):
         super().__init__()
         self.ref_encoder = ReferenceEncoder(spec_channels)
-        self.fc1 = nn.Linear(spec_channels, z_latent_dim)
-        self.fc2 = nn.Linear(spec_channels, z_latent_dim)
-        self.fc3 = nn.Linear(spec_channels, emb_dim)
+        self.fc1 = nn.Linear(emb_dim, z_latent_dim)
+        self.fc2 = nn.Linear(emb_dim, z_latent_dim)
+        self.fc3 = nn.Linear(z_latent_dim, emb_dim)
 
     def reparameterize(self, mu, logvar):
         if self.training:
@@ -545,7 +545,7 @@ class SynthesizerTrn(nn.Module):
         self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16,
                                       gin_channels=gin_channels)
         self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=128)
-        self.spk_enc = ReferenceEncoder(spec_channels)
+        self.spk_enc = VAE_GST(spec_channels, 32, 128)
         self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=128)
 
         # self.style_predictor = CVAEPredictor(hidden_channels, 128, 128, 32)
@@ -558,13 +558,13 @@ class SynthesizerTrn(nn.Module):
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=None)
 
         # s: (B, D)
-        s = self.spk_enc(y.transpose(1, 2))
+        s, loss_kl = self.spk_enc(y.transpose(1, 2))
         # (B, D, 1) like VITS
         s = s.unsqueeze(-1)
 
         # sid_emb = self.sid_emb(sid).unsqueeze(-1)
         # style_loss_kl, style_loss_rec = self.style_predictor(sid_emb.detach(), s.detach(), forward=True)
-        style_loss_kl, style_loss_rec = torch.FloatTensor([0]).cuda(),torch.FloatTensor([0]).cuda()
+        style_loss_kl, style_loss_rec = loss_kl, torch.FloatTensor([0]).cuda()
 
         # s = s + sid_emb
         # SNAC to flow
@@ -613,7 +613,8 @@ class SynthesizerTrn(nn.Module):
         #     s = s.unsqueeze(-1)
         # s = s + sid_emb
 
-        s = self.spk_enc(y.transpose(1, 2), None).unsqueeze(-1)
+        s, _ = self.spk_enc(y.transpose(1, 2))
+        s = s.unsqueeze(-1)
         logw = self.dp(x, x_mask, g=s)
         w = (torch.exp(logw)-1) * x_mask * length_scale
         w_ceil = torch.ceil(w)

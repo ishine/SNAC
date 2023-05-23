@@ -205,7 +205,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + style_loss_kl+ style_loss_rec
+                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + style_loss_kl*0.001 + style_loss_rec
         optim_g.zero_grad()
         scaler.scale(loss_gen_all).backward()
         scaler.unscale_(optim_g)
