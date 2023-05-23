@@ -13,6 +13,7 @@ import torch.distributions as D
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
 from commons import init_weights, get_padding
+import torch.distributions as D
 
 
 class StochasticDurationPredictor(nn.Module):
@@ -453,6 +454,34 @@ class CVAEPredictor(torch.nn.Module):
             pred_style_emb = self.decoder_fc2(F.leaky_relu(h))
             return pred_style_emb.transpose(1, 2) / 10
 
+class VAE_GST(nn.Module):
+    def __init__(self, spec_channels, z_latent_dim, emb_dim):
+        super().__init__()
+        self.ref_encoder = ReferenceEncoder(spec_channels)
+        self.fc1 = nn.Linear(spec_channels, z_latent_dim)
+        self.fc2 = nn.Linear(spec_channels, z_latent_dim)
+        self.fc3 = nn.Linear(spec_channels, emb_dim)
+
+    def reparameterize(self, mu, logvar):
+        if self.training:
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            return eps.mul(std).add_(mu)
+        else:
+            return mu
+
+    def forward(self, inputs):
+        enc_out = self.ref_encoder(inputs)
+        mu = self.fc1(enc_out)
+        logvar = self.fc2(enc_out)
+        posterior = D.Normal(mu, torch.exp(logvar))
+        kl_divergence = D.kl_divergence(posterior, D.Normal(torch.zeros_like(mu), torch.ones_like(logvar)))
+        loss_kl = kl_divergence.mean()
+
+        z = posterior.rsample()
+        style_embed = self.fc3(z)
+
+        return style_embed, loss_kl
 
 class SynthesizerTrn(nn.Module):
     """
@@ -503,7 +532,7 @@ class SynthesizerTrn(nn.Module):
 
         self.use_sdp = use_sdp
 
-        self.enc_p = TextEncoder(n_vocab,
+        self.text_encoder = TextEncoder(n_vocab,
                                  inter_channels,
                                  hidden_channels,
                                  filter_channels,
@@ -517,17 +546,14 @@ class SynthesizerTrn(nn.Module):
                                       gin_channels=gin_channels)
         self.flow = ResidualCouplingBlock(inter_channels, hidden_channels, 5, 1, 4, gin_channels=128)
         self.spk_enc = ReferenceEncoder(spec_channels)
-        if use_sdp:
-            self.dp = StochasticDurationPredictor(hidden_channels, 192, 3, 0.5, 4, gin_channels=128)
-        else:
-            self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=128)
+        self.dp = DurationPredictor(hidden_channels, 256, 3, 0.5, gin_channels=128)
 
-        self.style_predictor = CVAEPredictor(hidden_channels, 128, 128, 32)
-        self.sid_emb = nn.Embedding(300, 128)
+        # self.style_predictor = CVAEPredictor(hidden_channels, 128, 128, 32)
+        # self.sid_emb = nn.Embedding(300, 128)
 
     def forward(self, x, x_lengths, lang, y, y_lengths, sid=None):
 
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, lang)
+        x, m_p, logs_p, x_mask = self.text_encoder(x, x_lengths, lang)
 
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=None)
 
@@ -536,10 +562,11 @@ class SynthesizerTrn(nn.Module):
         # (B, D, 1) like VITS
         s = s.unsqueeze(-1)
 
-        sid_emb = self.sid_emb(sid).unsqueeze(-1)
-        style_loss_kl, style_loss_rec = self.style_predictor(sid_emb.detach(), s.detach(), forward=True)
+        # sid_emb = self.sid_emb(sid).unsqueeze(-1)
+        # style_loss_kl, style_loss_rec = self.style_predictor(sid_emb.detach(), s.detach(), forward=True)
+        style_loss_kl, style_loss_rec = torch.FloatTensor([0]).cuda(),torch.FloatTensor([0]).cuda()
 
-        s = s + sid_emb
+        # s = s + sid_emb
         # SNAC to flow
         z_p, tot_log_det = self.flow(z, y_mask, g=s)
 
@@ -557,14 +584,11 @@ class SynthesizerTrn(nn.Module):
             attn = monotonic_align.maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
 
         w = attn.sum(2)
-        if self.use_sdp:
-            l_length = self.dp(x, x_mask, w, g=s)
-            l_length = l_length / torch.sum(x_mask)
-        else:
-            logw_ = torch.log(w + 1e-6) * x_mask
-            logw = self.dp(x, x_mask, g=s)
-            l_length = torch.sum((logw - logw_) ** 2, [1, 2]) / torch.sum(x_mask)  # for averaging
-
+        logw_ = torch.log((w-torch.rand_like(w)) * x_mask + 1) * x_mask
+        assertnan(logw_)
+        # logw_ = torch.log(w + 1e-6) * x_mask
+        logw = self.dp(x, x_mask, g=s)
+        l_length = torch.sum((logw - logw_) ** 2, [1, 2]) / torch.sum(x_mask)  # for averaging
         # expand prior
         m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
         logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
@@ -576,23 +600,22 @@ class SynthesizerTrn(nn.Module):
 
     def infer(self, x, x_lengths, lang, y, sid=None, noise_scale=0.6, length_scale=1.1,
               noise_scale_w=0.7, max_len=None, predict_style=True, style_noise_scale=1):
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, lang)
+        x, m_p, logs_p, x_mask = self.text_encoder(x, x_lengths, lang)
 
-        sid_emb = self.sid_emb(sid).unsqueeze(-1)
+        # sid_emb = self.sid_emb(sid).unsqueeze(-1)
 
-        if predict_style:
-            s = self.style_predictor(sid_emb, noise_scale=style_noise_scale)
-        else:
-            # s: (B, D)
-            s = self.spk_enc(y.transpose(1, 2), None)
-            # (B, D, 1) like VITS
-            s = s.unsqueeze(-1)
-        s = s + sid_emb
-        if self.use_sdp:
-            logw = self.dp(x, x_mask, g=s, reverse=True, noise_scale=noise_scale_w)
-        else:
-            logw = self.dp(x, x_mask, g=s)
-        w = torch.exp(logw) * x_mask * length_scale
+        # if predict_style:
+        #     s = self.style_predictor(sid_emb, noise_scale=style_noise_scale)
+        # else:
+        #     # s: (B, D)
+        #     s = self.spk_enc(y.transpose(1, 2), None)
+        #     # (B, D, 1) like VITS
+        #     s = s.unsqueeze(-1)
+        # s = s + sid_emb
+
+        s = self.spk_enc(y.transpose(1, 2), None).unsqueeze(-1)
+        logw = self.dp(x, x_mask, g=s)
+        w = (torch.exp(logw)-1) * x_mask * length_scale
         w_ceil = torch.ceil(w)
         y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
         y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
@@ -602,7 +625,6 @@ class SynthesizerTrn(nn.Module):
         m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)  # [b, t', t], [b, t, d] -> [b, d, t']
         logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1,
                                                                                  2)  # [b, t', t], [b, t, d] -> [b, d, t']
-
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
 
         z = self.flow(z_p, y_mask, g=s, reverse=True)
@@ -668,3 +690,10 @@ class ReferenceEncoder(nn.Module):
         for i in range(n_convs):
             L = (L - kernel_size + 2 * pad) // stride + 1
         return L
+
+
+def assertnan(logw, name=''):
+    # print(logw)
+    # print()
+    # print()
+    assert not torch.isnan(logw).any(), f"{name}-{logw}"

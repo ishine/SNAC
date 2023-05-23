@@ -8,7 +8,7 @@
     "betas": [0.8, 0.99],
     "eps": 1e-9,
     "batch_size": 12,
-    "fp16_run": true,
+    "fp16_run": false,
     "lr_decay": 0.999875,
     "segment_size": 16384,
     "init_lr_ratio": 1,
@@ -18,8 +18,8 @@
     "keep_ckpts": 3
   },
   "data": {
-    "training_files": "filelists/nyaru.list.cleaned",
-    "validation_files": "filelists/val.list.cleaned",
+    "training_files": "filelists/train2.list.cleaned",
+    "validation_files": "filelists/val2.list.cleaned",
     "max_wav_value": 32768.0,
     "sampling_rate": 44100,
     "filter_length": 2048,
@@ -32,7 +32,7 @@
     "n_speakers": 0,
     "cleaned_text": true,
     "spk2id": {
-      "nen": 0,
+      "paimon": 0,
       "jsut": 1,
       "engfemale": 2,
       "engmale": 3,
