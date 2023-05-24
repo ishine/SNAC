@@ -11,6 +11,7 @@ import commons
 from mel_processing import spectrogram_torch
 from utils import load_wav_to_torch, load_filepaths_and_text
 from text import cleaned_text_to_sequence
+import torch.nn.functional as F
 
 """Multi speaker version"""
 
@@ -63,8 +64,10 @@ class TextAudioSpeakerLoader(torch.utils.data.Dataset):
         audiopath, sid, text, lang = audiopath_sid_text[0], audiopath_sid_text[1], audiopath_sid_text[2], audiopath_sid_text[3]
         text, lang = self.get_text(text, lang)
         spec, wav = self.get_audio(audiopath)
+        ssl = torch.load(audiopath.replace(".wav", ".ssl.pt"))
+        ssl = F.interpolate(ssl, size=spec.shape[-1], mode="nearest")
         sid = self.get_sid(sid)
-        return (text, spec, wav, sid, lang)
+        return (text, spec, wav, sid, lang,ssl)
 
     def get_audio(self, filename):
         audio, sampling_rate = load_wav_to_torch(filename)
@@ -140,6 +143,9 @@ class TextAudioSpeakerCollate():
         lang_padded.zero_()
         spec_padded.zero_()
         wav_padded.zero_()
+        ssl_padded = torch.FloatTensor(len(batch), batch[0][5].size(1), max_spec_len)
+        ssl_padded.zero_()
+
         for i in range(len(ids_sorted_decreasing)):
             row = batch[ids_sorted_decreasing[i]]
 
@@ -160,8 +166,9 @@ class TextAudioSpeakerCollate():
             lang = row[4]
             lang_padded[i, :lang.size(0)] = lang
 
-
-        return text_padded, text_lengths,lang_padded, spec_padded, spec_lengths, wav_padded, wav_lengths, sid
+            ssl = row[5]
+            ssl_padded[i, :, :ssl.size(2)] = ssl[0, :, :]
+        return text_padded, text_lengths,lang_padded, spec_padded, spec_lengths, ssl_padded, wav_padded, wav_lengths, sid
 
 
 class DistributedBucketSampler(torch.utils.data.distributed.DistributedSampler):

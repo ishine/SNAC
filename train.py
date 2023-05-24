@@ -149,16 +149,17 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     net_g.train()
     net_d.train()
-    for batch_idx, (x, x_lengths, lang, spec, spec_lengths, y, y_lengths, sid) in enumerate(train_loader):
+    for batch_idx, (x, x_lengths, lang, spec, spec_lengths, ssl, y, y_lengths, sid) in enumerate(train_loader):
         x, x_lengths = x.cuda(rank, non_blocking=True), x_lengths.cuda(rank, non_blocking=True)
         spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(rank, non_blocking=True)
         y, y_lengths = y.cuda(rank, non_blocking=True), y_lengths.cuda(rank, non_blocking=True)
         lang = lang.cuda(rank, non_blocking=True)
         sid = sid.cuda(rank, non_blocking=True)
+        ssl = ssl.cuda(rank, non_blocking=True)
 
         with autocast(enabled=hps.train.fp16_run):
             y_hat, l_length, tot_log_det, attn, ids_slice, x_mask, z_mask, \
-            (z, z_p, m_p, logs_p, m_q, logs_q), style_loss_kl, style_loss_rec = net_g(x, x_lengths, lang, spec, spec_lengths, sid)
+            (z, z_p, m_p, logs_p, m_q, logs_q), style_loss_kl, style_loss_rec = net_g(x, x_lengths, lang, ssl, spec_lengths, sid)
 
             mel = spec_to_mel_torch(
                 spec,
@@ -205,7 +206,7 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + style_loss_kl*0.1 + style_loss_rec
+                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + style_loss_kl*0.01 + style_loss_rec
         optim_g.zero_grad()
         scaler.scale(loss_gen_all).backward()
         scaler.unscale_(optim_g)
@@ -264,12 +265,13 @@ def evaluate(hps, generator, eval_loader, writer_eval):
     image_dict = {}
     audio_dict = {}
     with torch.no_grad():
-        for batch_idx, (x, x_lengths, lang, spec, spec_lengths, y, y_lengths, sid) in enumerate(eval_loader):
+        for batch_idx, (x, x_lengths, lang, spec, spec_lengths, ssl, y, y_lengths, sid) in enumerate(eval_loader):
             x, x_lengths = x.cuda(0), x_lengths.cuda(0)
             spec, spec_lengths = spec.cuda(0), spec_lengths.cuda(0)
             y, y_lengths = y.cuda(0), y_lengths.cuda(0)
             lang = lang.cuda(0)
             sid = sid.cuda(0)
+            ssl = ssl.cuda(0)
 
             # remove else
             x = x[:1]
@@ -280,7 +282,7 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             lang = lang[:1]
             sid = sid[:1]
             y_lengths = y_lengths[:1]
-            y_hat, attn, mask, *_ = generator.module.infer(x, x_lengths, lang, spec, max_len=1000, sid=sid)
+            y_hat, attn, mask, *_ = generator.module.infer(x, x_lengths, lang, ssl, max_len=1000, sid=sid)
             # print('eval',y[0])
             # print('eval',y_hat[0])
             # print('eval',y_hat.float()[0])
