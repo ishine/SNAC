@@ -588,8 +588,8 @@ class SynthesizerTrn(nn.Module):
                                  n_layers,
                                  kernel_size,
                                  p_dropout)
-        # self.pre_dec = PosteriorEncoder(inter_channels, inter_channels, hidden_channels, 5, 1, 16,
-        #                         gin_channels=gin_channels)
+        self.pre_dec = PreDecoder(inter_channels, inter_channels, hidden_channels, 5, 1, 16,
+                                gin_channels=gin_channels)
         self.dec = Generator(inter_channels, resblock, resblock_kernel_sizes, resblock_dilation_sizes, upsample_rates,
                              upsample_initial_channel, upsample_kernel_sizes, gin_channels=gin_channels)
         self.enc_q = PosteriorEncoder(spec_channels, inter_channels, hidden_channels, 5, 1, 16,
@@ -642,7 +642,8 @@ class SynthesizerTrn(nn.Module):
         # expand prior
         m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
         logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
-
+        
+        z = self.pre_dec(z, y_lengths, g=s)
         z_slice, ids_slice = commons.rand_slice_segments(z, y_lengths, self.segment_size)
         o = self.dec(z_slice, g=s)
         return o, l_length, tot_log_det, attn, ids_slice, x_mask, y_mask, (
@@ -679,6 +680,7 @@ class SynthesizerTrn(nn.Module):
         z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
 
         z = self.flow(z_p, y_mask, g=s, reverse=True)
+        z = self.pre_dec(z, y_lengths, g=s)
         o = self.dec((z * y_mask)[:, :, :max_len], g=s)
         return o, attn, y_mask, (z, z_p, m_p, logs_p), latent
 
@@ -690,6 +692,7 @@ class SynthesizerTrn(nn.Module):
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g_src)
         z_p, tot_log_det = self.flow(z, y_mask, g=g_src)
         z_hat = self.flow(z_p, y_mask, g=g_tgt, reverse=True)
+        z_hat = self.pre_dec(z_hat, y_lengths, g=g_tgt)
         o_hat = self.dec(z_hat * y_mask, g=g_tgt)
         return o_hat, y_mask, (z, z_p, z_hat)
 

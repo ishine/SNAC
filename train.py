@@ -104,7 +104,7 @@ def run(rank, n_gpus, hps):
     net_d = DDP(net_d, device_ids=[rank])
 
 
-    skip_optimizer = False
+    skip_optimizer = True
     try:
         _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g,
                                                    optim_g, skip_optimizer)
@@ -206,7 +206,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
                 loss_fm = feature_loss(fmap_r, fmap_g)
                 loss_gen, losses_gen = generator_loss(y_d_hat_g)
-                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + style_loss_kl*0.01 + style_loss_rec
+                c_style = 0 if global_step < 5000 else (0.01 if global_step < 10000 else 0.1)
+                loss_gen_all = loss_gen + loss_fm + loss_mel + loss_dur + loss_kl + style_loss_kl * c_style + style_loss_rec
         optim_g.zero_grad()
         scaler.scale(loss_gen_all).backward()
         scaler.unscale_(optim_g)
