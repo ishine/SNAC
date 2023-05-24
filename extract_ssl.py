@@ -33,8 +33,6 @@ def process_one(file_path, model):
         wav16k = torch.from_numpy(wav16k).to(device)
         ssl_content = wav2ssl.get_ssl_content(ssl_type, model, wav_16k_tensor=wav16k)
         torch.save(ssl_content.cpu(), ssl_path)
-        print(ssl_path+"!!!!!!")
-        exit(0)
 
 
 def process_batch(filenames):
@@ -57,7 +55,7 @@ if __name__ == "__main__":
     shuffle(filenames)
     multiprocessing.set_start_method("spawn", force=True)
 
-    num_processes = 1
+    num_processes = 3
     chunk_size = int(math.ceil(len(filenames) / num_processes))
     chunks = [
         filenames[i : i + chunk_size] for i in range(0, len(filenames), chunk_size)
