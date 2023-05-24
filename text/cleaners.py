@@ -1,9 +1,9 @@
 import re
-from text.japanese import japanese_to_romaji_with_accent, japanese_to_ipa, japanese_to_ipa2, japanese_to_ipa3
-from text.korean import latin_to_hangul, number_to_hangul, divide_hangul, korean_to_lazy_ipa, korean_to_ipa
+# from text.japanese import japanese_to_romaji_with_accent, japanese_to_ipa, japanese_to_ipa2, japanese_to_ipa3
+# from text.korean import latin_to_hangul, number_to_hangul, divide_hangul, korean_to_lazy_ipa, korean_to_ipa
 from text.mandarin import number_to_chinese, latin_to_bopomofo, chinese_to_romaji, \
     chinese_to_lazy_ipa, chinese_to_ipa, chinese_to_ipa2, pinyin_to_ipa
-from text.english import english_to_lazy_ipa, english_to_ipa2, english_to_lazy_ipa2
+# from text.english import english_to_lazy_ipa, english_to_ipa2, english_to_lazy_ipa2
 from text.symbols import symbols
 from text import cleaned_text_to_sequence
 

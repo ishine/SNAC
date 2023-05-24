@@ -461,6 +461,7 @@ class VAE_GST(nn.Module):
         self.fc1 = nn.Linear(emb_dim, z_latent_dim)
         self.fc2 = nn.Linear(emb_dim, z_latent_dim)
         self.fc3 = nn.Linear(z_latent_dim, emb_dim)
+        self.z_latent_dim = z_latent_dim
 
     def reparameterize(self, mu, logvar):
         if self.training:
@@ -482,6 +483,23 @@ class VAE_GST(nn.Module):
         style_embed = self.fc3(z)
 
         return style_embed, loss_kl
+
+    def infer(self, inputs=None, random_sample=False, manual_latent=None):
+        if random_sample:
+            dev = next(self.parameters()).device
+            posterior = D.Normal(torch.zeros(1, self.z_latent_dim ,device=dev), torch.ones(1, self.z_latent_dim ,device=dev))
+        else:
+            
+            enc_out = self.ref_encoder(inputs.transpose(1, 2))
+            mu = self.fc1(enc_out)
+            logvar = self.fc2(enc_out)
+            posterior = D.Normal(mu, torch.exp(logvar))
+        if manual_latent is None:
+            z = posterior.rsample()
+        else:
+            z = manual_latent
+        style_embed = self.fc3(z)
+        return style_embed, z
 
 class SynthesizerTrn(nn.Module):
     """
@@ -584,7 +602,7 @@ class SynthesizerTrn(nn.Module):
             attn = monotonic_align.maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
 
         w = attn.sum(2)
-        logw_ = torch.log((w-torch.rand_like(w)) * x_mask + 1) * x_mask
+        logw_ = torch.log((w-torch.rand_like(w)*0.83) * x_mask + 1) * x_mask
         assertnan(logw_)
         # logw_ = torch.log(w + 1e-6) * x_mask
         logw = self.dp(x, x_mask, g=s)
@@ -599,7 +617,7 @@ class SynthesizerTrn(nn.Module):
         z, z_p, m_p, logs_p, m_q, logs_q), style_loss_kl, style_loss_rec
 
     def infer(self, x, x_lengths, lang, y, sid=None, noise_scale=0.6, length_scale=1.1,
-              noise_scale_w=0.7, max_len=None, predict_style=True, style_noise_scale=1):
+              noise_scale_w=0.7, max_len=None, predict_style=False, style_noise_scale=1, manual_latent=None):
         x, m_p, logs_p, x_mask = self.text_encoder(x, x_lengths, lang)
 
         # sid_emb = self.sid_emb(sid).unsqueeze(-1)
@@ -613,7 +631,7 @@ class SynthesizerTrn(nn.Module):
         #     s = s.unsqueeze(-1)
         # s = s + sid_emb
 
-        s, _ = self.spk_enc(y.transpose(1, 2))
+        s, latent = self.spk_enc.infer(y, predict_style, manual_latent)
         s = s.unsqueeze(-1)
         logw = self.dp(x, x_mask, g=s)
         w = (torch.exp(logw)-1) * x_mask * length_scale
@@ -630,16 +648,17 @@ class SynthesizerTrn(nn.Module):
 
         z = self.flow(z_p, y_mask, g=s, reverse=True)
         o = self.dec((z * y_mask)[:, :, :max_len], g=None)
-        return o, attn, y_mask, (z, z_p, m_p, logs_p)
+        return o, attn, y_mask, (z, z_p, m_p, logs_p), latent
 
-    def voice_conversion(self, y, y_lengths, sid_src, sid_tgt):
-        assert self.n_speakers > 0, "n_speakers have to be larger than 0."
-        g_src = self.emb_g(sid_src).unsqueeze(-1)
-        g_tgt = self.emb_g(sid_tgt).unsqueeze(-1)
-        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g_src)
-        z_p = self.flow(z, y_mask, g=g_src)
+    def voice_conversion(self, y, y_lengths, y_tgt):
+        g_src, latent = self.spk_enc.infer(y, False, None)
+        g_src = g_src.unsqueeze(-1)
+        g_tgt, latent = self.spk_enc.infer(y_tgt, False, None)
+        g_tgt = g_tgt.unsqueeze(-1)
+        z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=None)
+        z_p, tot_log_det = self.flow(z, y_mask, g=g_src)
         z_hat = self.flow(z_p, y_mask, g=g_tgt, reverse=True)
-        o_hat = self.dec(z_hat * y_mask, g=g_tgt)
+        o_hat = self.dec(z_hat * y_mask, g=None)
         return o_hat, y_mask, (z, z_p, z_hat)
 
 
