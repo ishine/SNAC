@@ -104,7 +104,7 @@ def run(rank, n_gpus, hps):
     net_d = DDP(net_d, device_ids=[rank])
 
 
-    skip_optimizer = True
+    skip_optimizer = False
     try:
         _, _, _, epoch_str = utils.load_checkpoint(utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"), net_g,
                                                    optim_g, skip_optimizer)
@@ -149,9 +149,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
 
     net_g.train()
     net_d.train()
-    for batch_idx, (x, x_lengths, lang, spec, spec_lengths, ssl, y, y_lengths, sid) in enumerate(train_loader):
+    for batch_idx, (x, x_lengths, lang, mel, spec_lengths, ssl, y, y_lengths, sid) in enumerate(train_loader):
         x, x_lengths = x.cuda(rank, non_blocking=True), x_lengths.cuda(rank, non_blocking=True)
-        spec, spec_lengths = spec.cuda(rank, non_blocking=True), spec_lengths.cuda(rank, non_blocking=True)
+        mel, spec_lengths = mel.cuda(rank, non_blocking=True), spec_lengths.cuda(rank, non_blocking=True)
         y, y_lengths = y.cuda(rank, non_blocking=True), y_lengths.cuda(rank, non_blocking=True)
         lang = lang.cuda(rank, non_blocking=True)
         sid = sid.cuda(rank, non_blocking=True)
@@ -161,13 +161,6 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             y_hat, l_length, tot_log_det, attn, ids_slice, x_mask, z_mask, \
             (z, z_p, m_p, logs_p, m_q, logs_q), style_loss_kl, style_loss_rec = net_g(x, x_lengths, lang, ssl, spec_lengths, sid)
 
-            mel = spec_to_mel_torch(
-                spec,
-                hps.data.filter_length,
-                hps.data.n_mel_channels,
-                hps.data.sampling_rate,
-                hps.data.mel_fmin,
-                hps.data.mel_fmax)
             y_mel = commons.slice_segments(mel, ids_slice, hps.train.segment_size // hps.data.hop_length)
 
             y = commons.slice_segments(y, ids_slice * hps.data.hop_length, hps.train.segment_size)  # slice
@@ -266,9 +259,9 @@ def evaluate(hps, generator, eval_loader, writer_eval):
     image_dict = {}
     audio_dict = {}
     with torch.no_grad():
-        for batch_idx, (x, x_lengths, lang, spec, spec_lengths, ssl, y, y_lengths, sid) in enumerate(eval_loader):
+        for batch_idx, (x, x_lengths, lang, mel, spec_lengths, ssl, y, y_lengths, sid) in enumerate(eval_loader):
             x, x_lengths = x.cuda(0), x_lengths.cuda(0)
-            spec, spec_lengths = spec.cuda(0), spec_lengths.cuda(0)
+            mel, spec_lengths = mel.cuda(0), spec_lengths.cuda(0)
             y, y_lengths = y.cuda(0), y_lengths.cuda(0)
             lang = lang.cuda(0)
             sid = sid.cuda(0)
@@ -277,7 +270,7 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             # remove else
             x = x[:1]
             x_lengths = x_lengths[:1]
-            spec = spec[:1]
+            mel = mel[:1]
             spec_lengths = spec_lengths[:1]
             y = y[:1]
             lang = lang[:1]
@@ -289,13 +282,7 @@ def evaluate(hps, generator, eval_loader, writer_eval):
             # print('eval',y_hat.float()[0])
             y_hat_lengths = mask.sum([1, 2]).long() * hps.data.hop_length
 
-            mel = spec_to_mel_torch(
-                spec,
-                hps.data.filter_length,
-                hps.data.n_mel_channels,
-                hps.data.sampling_rate,
-                hps.data.mel_fmin,
-                hps.data.mel_fmax)
+        
             y_hat_mel = mel_spectrogram_torch(
                 y_hat.squeeze(1).float(),
                 hps.data.filter_length,
