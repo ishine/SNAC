@@ -26,7 +26,15 @@ def intersperse(lst, item):
   result[1::2] = lst
   return result
 
+def intersperse_with_language_id(text, lang, item):
+  n = len(text)
+  _text = [item] * (2 * n + 1)
+  _lang = [None] * (2 * n + 1)
+  _text[1::2] = text
+  _lang[1::2] = lang
+  _lang[::2] = lang + [lang[-1]]
 
+  return _text, _lang
 def kl_divergence(m_p, logs_p, m_q, logs_q):
   """KL(P||Q)"""
   kl = (logs_q - logs_p) - 0.5
